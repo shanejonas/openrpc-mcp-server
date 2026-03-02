@@ -15,6 +15,40 @@ https://github.com/user-attachments/assets/3447175a-f921-4ded-8250-b611edb2fb67
   - Uses OpenRPC's `rpc.discover` specification
   - Lists all methods on a given server
 
+
+### Request headers
+
+You can configure default HTTP headers when starting the server (for example `X-Api-Key`) and optionally override/add headers per tool call.
+
+#### CLI defaults
+
+Pass one or more `--header` flags:
+
+```bash
+openrpc-mcp-server --header "X-Api-Key: my-key" --header "X-Tenant: acme"
+```
+
+Or pass a JSON object once:
+
+```bash
+openrpc-mcp-server --headers '{"X-Api-Key":"my-key"}'
+```
+
+#### Tool-level headers
+
+Both `rpc_call` and `rpc_discover` accept an optional `headers` argument as a stringified JSON object:
+
+```json
+{
+  "server": "https://example-rpc.com",
+  "method": "getBalance",
+  "params": "{\"account\":\"0xabc...\"}",
+  "headers": "{\"X-Api-Key\":\"override-key\"}"
+}
+```
+
+Header merge behavior: `finalHeaders = { ...cliHeaders, ...toolHeaders }` (tool headers win on key conflicts).
+
 ## Development
 
 Install dependencies:
