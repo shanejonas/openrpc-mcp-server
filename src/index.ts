@@ -15,6 +15,99 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
+type HeadersMap = Record<string, string>;
+
+function parseHeaderArgument(value: string): [string, string] {
+  const separatorIndex = value.indexOf(":");
+  if (separatorIndex === -1) {
+    throw new Error(
+      `Invalid header format \"${value}\". Expected \"Header-Name: value\".`
+    );
+  }
+
+  const key = value.slice(0, separatorIndex).trim();
+  const headerValue = value.slice(separatorIndex + 1).trim();
+
+  if (!key) {
+    throw new Error(`Invalid header format \"${value}\". Header name is missing.`);
+  }
+
+  return [key, headerValue];
+}
+
+function parseToolHeaders(value: unknown): HeadersMap {
+  if (value === undefined || value === null || value === "") {
+    return {};
+  }
+
+  if (typeof value !== "string") {
+    throw new Error("Tool headers must be a JSON object string.");
+  }
+
+  let parsedValue: unknown;
+  try {
+    parsedValue = JSON.parse(value);
+  } catch {
+    throw new Error("Invalid tool headers JSON. Expected an object map of headers.");
+  }
+
+  if (!parsedValue || typeof parsedValue !== "object" || Array.isArray(parsedValue)) {
+    throw new Error("Invalid tool headers JSON. Expected an object map of headers.");
+  }
+
+  const headers: HeadersMap = {};
+  for (const [key, headerValue] of Object.entries(parsedValue as Record<string, unknown>)) {
+    headers[key] = String(headerValue);
+  }
+
+  return headers;
+}
+
+function parseCliHeaders(argv: string[]): HeadersMap {
+  const headers: HeadersMap = {};
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+
+    if (arg === "--header" || arg === "-H") {
+      const value = argv[i + 1];
+      if (!value) {
+        throw new Error("Missing value for --header. Expected \"Header-Name: value\".");
+      }
+
+      const [key, headerValue] = parseHeaderArgument(value);
+      headers[key] = headerValue;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--headers" || arg === "--headers-json") {
+      const value = argv[i + 1];
+      if (!value) {
+        throw new Error("Missing value for --headers. Expected a JSON object string.");
+      }
+
+      const parsedHeaders = parseToolHeaders(value);
+      Object.assign(headers, parsedHeaders);
+      i += 1;
+    }
+  }
+
+  return headers;
+}
+
+const cliHeaders = parseCliHeaders(process.argv.slice(2));
+
+function createClient(serverUrl: string, toolHeaders: unknown): Client {
+  const requestHeaders = {
+    ...cliHeaders,
+    ...parseToolHeaders(toolHeaders),
+  };
+
+  const transport = new HTTPTransport(serverUrl, { headers: requestHeaders });
+  return new Client(new RequestManager([transport]));
+}
+
 /**
  * Create an MCP server with capabilities for tools and prompts
  * to interact with JSON-RPC servers
@@ -49,7 +142,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: "object",
           properties: {
             server: {
-              type: "string", 
+              type: "string",
               description: "Server URL"
             },
             method: {
@@ -59,8 +152,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             // this is a bit of a hack since claude seems to have issues with nested parameters
             params: {
               type: "string",
-              description: "Stringified Parameters to pass to the method"
-            } 
+              description: "Stringified parameters to pass to the method"
+            },
+            headers: {
+              type: "string",
+              description: "Optional stringified JSON object of headers for this call. These are merged with CLI headers and take precedence when keys overlap."
+            }
           },
           required: ["server", "method"]
         }
@@ -75,6 +172,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "Server URL"
             },
+            headers: {
+              type: "string",
+              description: "Optional stringified JSON object of headers for this call. These are merged with CLI headers and take precedence when keys overlap."
+            }
           },
           required: ["server"]
         }
@@ -93,9 +194,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case "rpc_call": {
       const server = String(request.params.arguments?.server);
       const method = String(request.params.arguments?.method);
-      const params = JSON.parse(String(request.params.arguments?.params));
-      let transport = new HTTPTransport(server);
-      let client = new Client(new RequestManager([transport]));
+      const rawParams = request.params.arguments?.params;
+      const params = rawParams !== undefined && rawParams !== null && rawParams !== ""
+        ? JSON.parse(String(rawParams))
+        : undefined;
+      const client = createClient(server, request.params.arguments?.headers);
       const results = await client.request({ method: method, params: params as any});
       return {
         toolResult: {
@@ -112,8 +215,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!server) {
         throw new Error("Server is required");
       }
-      let transport = new HTTPTransport(server);
-      let client = new Client(new RequestManager([transport]));
+      const client = createClient(server, request.params.arguments?.headers);
       const results = await client.request({ method: "rpc.discover" });
 
       return  {
